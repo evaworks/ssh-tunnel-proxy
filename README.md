@@ -2,7 +2,7 @@
 
 一条命令，让任何 Linux 设备通过一台中继服务器实现：
 
-- **访问外网** — SOCKS5 代理 + sshuttle 透明代理
+- **访问外网** — SOCKS5 代理
 - **从外网访问本机** — 反向 SSH 隧道
 
 适用于：DGX Spark、树莓派、工控机、内网服务器等任何 Linux 设备。
@@ -15,7 +15,7 @@
 │  (内网/NAT)   │                │  (有公网 IP)   │   │ (笔记本等) │
 └──────────────┘                └───────────────┘   └───────────┘
      ↑                                  │
-     └── SOCKS5 / sshuttle 隧道 ────────┘ → 访问外网
+      └── SOCKS5 隧道 ──────────────────┘ → 访问外网
 ```
 
 ## 快速安装
@@ -54,13 +54,13 @@ curl -sSL https://raw.githubusercontent.com/evaworks/ssh-tunnel-proxy/main/insta
 | 步骤 | 动作 | 交互 |
 |------|------|------|
 | 1 | 预检：系统、端口、网络连通性 | 自动 |
-| 2 | 安装 autossh、sshuttle | 自动（sudo） |
+| 2 | 安装必要依赖（如有） | 自动（sudo） |
 | 3 | 生成 ed25519 SSH 密钥（如无） | 自动 |
 | 4 | 拷贝公钥到中继服务器 | **输入一次服务器密码** |
 | 5 | 测试免密登录 | 自动 |
 | 6 | 远程配置：GatewayPorts + 防火墙 | 自动免密，先备份 sshd_config，`sshd -t` 验证后再重启 |
 | 7 | 本地配置：创建 systemd 服务 + 环境配置文件 | 自动 |
-| 8 | 启动隧道 | 自动 |
+| 8 | 启动隧道并设置开机自启 | 自动 |
 | 9 | 验证服务状态 | 自动 |
 
 ## 使用
@@ -84,17 +84,19 @@ curl --socks5-hostname 127.0.0.1:1080 https://www.google.com
 # 系统全局使用
 export ALL_PROXY=socks5h://127.0.0.1:1080
 
-# sshuttle 透明代理（全流量 TCP）
+# 可选：sshuttle 透明代理（全流量 TCP，需 --enable-sshuttle 安装）
 sudo systemctl enable --now tunnel-sshuttle.service
 ```
 
 ### 服务管理
 
+安装完成后所有隧道服务会自动启动并设置为开机自启，无需额外操作。
+
 ```bash
 # 查看状态
 sudo systemctl status tunnel-reverse      # 反向隧道
 sudo systemctl status tunnel-socks5        # SOCKS5 代理
-sudo systemctl status tunnel-sshuttle      # sshuttle 透明代理
+sudo systemctl status tunnel-sshuttle      # sshuttle 透明代理（如已安装）
 
 # 启动/停止/重启
 sudo systemctl start/stop/restart tunnel-reverse
@@ -103,7 +105,6 @@ sudo systemctl enable/disable tunnel-reverse
 # 查看日志
 sudo journalctl -u tunnel-reverse -f
 sudo journalctl -u tunnel-socks5 -f
-sudo journalctl -u tunnel-sshuttle -f
 ```
 
 ### 修改端口等配置
@@ -140,9 +141,9 @@ sudo systemctl restart sshd
 
 | 组件 | 原理 | 守护方式 |
 |------|------|---------|
-| 反向隧道 | `ssh -R` 将本地 22 → 中继服务器 2222 | systemd + autossh（断线重连） |
-| SOCKS5 代理 | `ssh -D` 动态端口转发 | systemd + autossh（断线重连） |
-| 透明代理 | SSH 隧道 + iptables 规则 | systemd + sshuttle |
+| 反向隧道 | `ssh -R` 将本地 22 → 中继服务器 2222 | systemd + SSH + `Restart=always`（断线重连） |
+| SOCKS5 代理 | `ssh -D` 动态端口转发 | systemd + SSH + `Restart=always`（断线重连） |
+| 透明代理 | SSH 隧道 + iptables 规则 | systemd + sshuttle（可选） |
 | 配置持久化 | 环境文件 `/etc/ssh-tunnel-proxy/tunnel.conf` | 修改后重启服务即可生效 |
 
 ### 安全措施
@@ -151,7 +152,7 @@ sudo systemctl restart sshd
 - 重启 sshd 前执行 `sshd -t` 验证配置
 - 配置校验失败自动回滚备份
 - 所有服务以普通用户身份运行（`User=` 指令）
-- sshuttle 使用 PID 文件管理进程
+- sshuttle 使用 PID 文件管理进程（仅启用时）
 
 ## License
 
