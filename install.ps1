@@ -450,6 +450,9 @@ function Invoke-LocalSetup {
     if ($DeployReverse) {
         Add-SshConfig
     }
+
+    # ---- Deploy tunnel-proxy.ps1 control script ----
+    Deploy-TunnelProxyScript
 }
 
 # ============================================
@@ -519,6 +522,98 @@ Host tunnel-proxy
     $entry | Out-File -FilePath $SshConfigPath -Append -Encoding UTF8
     Info "Added SSH config entry: Host tunnel-proxy"
     Info "  Connect with: ssh tunnel-proxy"
+}
+
+# ============================================
+# Deploy tunnel-proxy.ps1 to a PATH-accessible location
+# ============================================
+function Deploy-TunnelProxyScript {
+    $scriptDir = "$env:ProgramData\ssh-tunnel-proxy"
+    if (-not (Test-Path $scriptDir)) { New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null }
+
+    $scriptPath = "$scriptDir\tunnel-proxy.ps1"
+    $scriptContent = @'
+<#
+.SYNOPSIS
+    Unified control for ssh-tunnel-proxy
+.DESCRIPTION
+    Usage: tunnel-proxy {start|stop|status|restart}
+#>
+
+param([Parameter(Mandatory=$true)][ValidateSet("start","stop","status","restart")][string]$Action)
+
+$ConfigDir = "$env:ProgramData\ssh-tunnel-proxy"
+$ConfigFile = "$ConfigDir\tunnel.json"
+$NssmExe = "$env:ProgramFiles\nssm\nssm.exe"
+
+$Socks5Port = 1080
+if (Test-Path $ConfigFile) {
+    try {
+        $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        if ($cfg.socks5Port) { $Socks5Port = $cfg.socks5Port }
+    } catch {}
+}
+
+function Set-SystemProxy { param([int]$Port)
+    $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+    Set-ItemProperty -Path $regPath -Name ProxyServer -Value "127.0.0.1:$Port" -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 1 -ErrorAction SilentlyContinue
+    Write-Host "[tunnel-proxy] System proxy enabled (127.0.0.1:$Port)"
+}
+function Clear-SystemProxy {
+    $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+    Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue
+    Write-Host "[tunnel-proxy] System proxy disabled"
+}
+
+switch ($Action) {
+    "start" {
+        Write-Host "[tunnel-proxy] Starting services..."
+        & $NssmExe start ssh-tunnel-reverse 2>$null
+        & $NssmExe start ssh-tunnel-socks5 2>$null
+        Write-Host "[tunnel-proxy] Services started"
+        Set-SystemProxy $Socks5Port
+    }
+    "stop" {
+        Write-Host "[tunnel-proxy] Stopping services..."
+        & $NssmExe stop ssh-tunnel-reverse 2>$null
+        & $NssmExe stop ssh-tunnel-socks5 2>$null
+        Write-Host "[tunnel-proxy] Services stopped"
+        Clear-SystemProxy
+    }
+    "restart" {
+        & $NssmExe stop ssh-tunnel-reverse 2>$null
+        & $NssmExe stop ssh-tunnel-socks5 2>$null
+        Start-Sleep -Seconds 1
+        & $NssmExe start ssh-tunnel-reverse 2>$null
+        & $NssmExe start ssh-tunnel-socks5 2>$null
+        Write-Host "[tunnel-proxy] Services restarted"
+        Set-SystemProxy $Socks5Port
+    }
+    "status" {
+        Write-Host "=== Reverse Tunnel ==="
+        $s = & $NssmExe status ssh-tunnel-reverse 2>$null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  $s" } else { Write-Host "  (not installed)" }
+        Write-Host ""
+        Write-Host "=== SOCKS5 Proxy ==="
+        $s = & $NssmExe status ssh-tunnel-socks5 2>$null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  $s" } else { Write-Host "  (not installed)" }
+    }
+}
+'@
+
+    Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
+
+    # Add to PATH for current user if not already there
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$scriptDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$userPath;$scriptDir", "User")
+        $env:Path += ";$scriptDir"
+        Info "Added $scriptDir to user PATH"
+    }
+
+    Info "Deployed: $scriptPath"
+    Info "  Usage: tunnel-proxy {start|stop|status|restart}"
 }
 
 # ============================================

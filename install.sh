@@ -631,6 +631,75 @@ Host tunnel-proxy
             info "Added SSH config entry: Host tunnel-proxy"
         fi
     fi
+
+    # ---- tunnel-proxy control script ----
+    local TUNNEL_SCRIPT="/usr/local/bin/tunnel-proxy"
+    if [[ ! -f "$TUNNEL_SCRIPT" ]]; then
+        sudo_run tee "$TUNNEL_SCRIPT" > /dev/null << 'TUNNELSCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR="/etc/ssh-tunnel-proxy"
+CONFIG_FILE="$CONFIG_DIR/tunnel.conf"
+ORIGINAL_USER="${SUDO_USER:-$USER}"
+SOCKS5_PORT=1080
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" 2>/dev/null || true
+
+usage() { echo "Usage: tunnel-proxy {start|stop|status|restart}" >&2; exit 1; }
+
+start_services() {
+    echo "[tunnel-proxy] Starting services..."
+    sudo systemctl start tunnel-reverse.service 2>/dev/null || true
+    sudo systemctl start tunnel-socks5.service 2>/dev/null || true
+    echo "[tunnel-proxy] Services started"
+    if command -v gsettings &>/dev/null && [[ -n "$ORIGINAL_USER" ]]; then
+        sudo -u "$ORIGINAL_USER" gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
+        echo "[tunnel-proxy] GNOME system proxy enabled"
+    fi
+}
+
+stop_services() {
+    echo "[tunnel-proxy] Stopping services..."
+    sudo systemctl stop tunnel-reverse.service 2>/dev/null || true
+    sudo systemctl stop tunnel-socks5.service 2>/dev/null || true
+    echo "[tunnel-proxy] Services stopped"
+    if command -v gsettings &>/dev/null && [[ -n "$ORIGINAL_USER" ]]; then
+        sudo -u "$ORIGINAL_USER" gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
+        echo "[tunnel-proxy] GNOME system proxy disabled"
+    fi
+}
+
+status_services() {
+    echo "=== Reverse Tunnel ==="
+    systemctl status tunnel-reverse.service 2>/dev/null || echo "  (not installed)"
+    echo ""
+    echo "=== SOCKS5 Proxy ==="
+    systemctl status tunnel-socks5.service 2>/dev/null || echo "  (not installed)"
+}
+
+case "${1:-}" in start) start_services ;; stop) stop_services ;; restart) stop_services; sleep 1; start_services ;; status) status_services ;; *) usage ;; esac
+TUNNELSCRIPT
+        sudo_run chmod +x "$TUNNEL_SCRIPT"
+        info "Deployed: /usr/local/bin/tunnel-proxy"
+    else
+        info "Already exists: /usr/local/bin/tunnel-proxy"
+    fi
+
+    # ---- Dynamic ALL_PROXY in bashrc ----
+    local BASH_LINE='if ss -tlnp 2>/dev/null | grep -q ":${SOCKS5_PORT} "; then export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}; fi'
+    local BASH_MARK="# ssh-tunnel-proxy: auto ALL_PROXY"
+    if [[ -f "${HOME}/.bashrc" ]] && grep -q "$BASH_MARK" "${HOME}/.bashrc" 2>/dev/null; then
+        info "ALL_PROXY already configured in ~/.bashrc"
+    else
+        {
+            echo ""
+            echo "$BASH_MARK"
+            echo "if ss -tlnp 2>/dev/null | grep -q \":${SOCKS5_PORT} \"; then"
+            echo "    export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}"
+            echo "fi"
+        } >> "${HOME}/.bashrc" 2>/dev/null || true
+        info "Added dynamic ALL_PROXY to ~/.bashrc"
+    fi
 }
 
 # ============================================

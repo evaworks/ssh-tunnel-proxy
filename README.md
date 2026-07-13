@@ -106,7 +106,26 @@ sudo systemctl enable --now tunnel-sshuttle.service
 
 安装完成后所有隧道服务会自动启动并设置为开机自启，无需额外操作。
 
-**Linux（systemd）：**
+使用 `tunnel-proxy` 统一开关隧道并自动同步系统代理设置：
+
+**Linux：**
+```bash
+# 启动隧道 + 启用 GNOME 系统代理
+sudo tunnel-proxy start
+
+# 关闭隧道 + 禁用 GNOME 系统代理
+sudo tunnel-proxy stop
+
+# 重启
+sudo tunnel-proxy restart
+
+# 查看状态
+sudo tunnel-proxy status
+```
+
+`ALL_PROXY` 环境变量已配置为动态检测——隧道运行时自动生效，关闭后新终端不会使用代理。如果当前终端需要立即更新，执行 `source ~/.bashrc`。
+
+**Linux（systemd 原生命令）：**
 
 ```bash
 # 查看状态
@@ -129,7 +148,22 @@ sudo journalctl -u tunnel-reverse -f
 sudo journalctl -u tunnel-socks5 -f
 ```
 
-**Windows（NSSM）：**
+**Windows：**
+```powershell
+# 启动隧道 + 启用系统代理
+tunnel-proxy start
+
+# 关闭隧道 + 禁用系统代理
+tunnel-proxy stop
+
+# 重启
+tunnel-proxy restart
+
+# 查看状态
+tunnel-proxy status
+```
+
+**Windows（NSSM 原生命令）：**
 
 ```powershell
 # 设置 nssm 命令别名（一次设置，后续可直接用 nssm）

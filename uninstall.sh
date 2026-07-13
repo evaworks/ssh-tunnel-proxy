@@ -100,6 +100,19 @@ main() {
         info "Removed SSH config entry (Host tunnel-proxy)"
     fi
 
+    # Remove tunnel-proxy control script
+    sudo rm -f /usr/local/bin/tunnel-proxy
+    info "Removed: /usr/local/bin/tunnel-proxy"
+
+    # Remove ALL_PROXY from bashrc
+    if [[ -f "${HOME}/.bashrc" ]]; then
+        local tmpfile
+        tmpfile=$(mktemp)
+        sed '/^# ssh-tunnel-proxy: auto ALL_PROXY/,/^fi$/d' "${HOME}/.bashrc" > "$tmpfile" 2>/dev/null || true
+        mv "$tmpfile" "${HOME}/.bashrc"
+        info "Removed ALL_PROXY config from ~/.bashrc"
+    fi
+
     # ---- Clean up relay server ----
     if [[ -n "$SERVER" ]]; then
         echo ""
@@ -158,7 +171,7 @@ REMOTECLEANUP
     echo ""
     echo "The following were left untouched (may be needed elsewhere):"
     echo "  - SSH keys:      ~/.ssh/id_ed25519*"
-    echo "  - Packages:      autossh, sshuttle"
+    echo "  - Packages:      sshuttle"
     echo ""
 }
 

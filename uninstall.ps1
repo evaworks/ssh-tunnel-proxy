@@ -79,6 +79,23 @@ function Remove-SshConfig {
     }
 }
 
+function Remove-TunnelProxyScript {
+    $scriptPath = "$env:ProgramData\ssh-tunnel-proxy\tunnel-proxy.ps1"
+    if (Test-Path $scriptPath) {
+        Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+        Info "Removed: tunnel-proxy.ps1"
+    }
+
+    # Clean up PATH
+    $scriptDir = "$env:ProgramData\ssh-tunnel-proxy"
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -like "*$scriptDir*") {
+        $newPath = ($userPath -split ';' | Where-Object { $_ -ne $scriptDir }) -join ';'
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+        Info "Removed $scriptDir from user PATH"
+    }
+}
+
 function Invoke-RemoteCleanup {
     param($config)
     if (-not $config -or -not $config.server) {
@@ -178,6 +195,9 @@ Restore-SystemProxy
 
 # Remove SSH config entry
 Remove-SshConfig
+
+# Remove tunnel-proxy control script
+Remove-TunnelProxyScript
 
 # Clean up relay server
 Invoke-RemoteCleanup $config
