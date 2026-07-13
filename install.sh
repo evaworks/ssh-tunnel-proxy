@@ -209,11 +209,10 @@ install_deps() {
 
     local need=()
 
-    command -v autossh  &>/dev/null || need+=("autossh")
     command -v sshuttle &>/dev/null || need+=("sshuttle")
 
     if [[ ${#need[@]} -eq 0 ]]; then
-        info "autossh and sshuttle are already installed"
+        info "sshuttle is already installed"
         return
     fi
 
@@ -462,7 +461,7 @@ Wants=network-online.target
 Type=simple
 User=${LOCAL_USER}
 EnvironmentFile=${CONFIG_FILE}
-ExecStart=/usr/bin/autossh -M 0 \\
+ExecStart=/usr/bin/ssh \\
     -o "ServerAliveInterval=30" \\
     -o "ServerAliveCountMax=3" \\
     -o "ExitOnForwardFailure=yes" \\
@@ -493,7 +492,7 @@ Wants=network-online.target
 Type=simple
 User=${LOCAL_USER}
 EnvironmentFile=${CONFIG_FILE}
-ExecStart=/usr/bin/autossh -M 0 \\
+ExecStart=/usr/bin/ssh \\
     -o "ServerAliveInterval=30" \\
     -o "ServerAliveCountMax=3" \\
     -o "StrictHostKeyChecking=accept-new" \\
