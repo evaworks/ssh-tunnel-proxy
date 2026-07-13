@@ -671,7 +671,7 @@ print_instructions() {
     fi
     if [[ "$DEPLOY_SOCKS5" == true ]]; then
         echo -e "  ${YELLOW}Test internet access via SOCKS5 proxy:${NC}"
-        echo -e "    curl -x socks5://127.0.0.1:${SOCKS5_PORT} https://www.google.com${NC}"
+        echo -e "    curl --socks5-hostname 127.0.0.1:${SOCKS5_PORT} https://www.google.com${NC}"
         echo ""
         echo -e "  ${YELLOW}Transparent proxy (sshuttle):${NC}"
         echo -e "    sudo systemctl enable --now tunnel-sshuttle.service${NC}"

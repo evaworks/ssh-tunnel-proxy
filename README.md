@@ -79,10 +79,10 @@ ssh tunnel-proxy
 
 ```bash
 # SOCKS5 代理（应用级）
-curl -x socks5://127.0.0.1:1080 https://www.google.com
+curl --socks5-hostname 127.0.0.1:1080 https://www.google.com
 
 # 系统全局使用
-export ALL_PROXY=socks5://127.0.0.1:1080
+export ALL_PROXY=socks5h://127.0.0.1:1080
 
 # sshuttle 透明代理（全流量 TCP）
 sudo systemctl enable --now tunnel-sshuttle.service
