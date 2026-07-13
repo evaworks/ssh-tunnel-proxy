@@ -114,9 +114,15 @@ sudo systemctl status tunnel-reverse      # 反向隧道
 sudo systemctl status tunnel-socks5        # SOCKS5 代理
 sudo systemctl status tunnel-sshuttle      # sshuttle 透明代理（如已安装）
 
-# 启动/停止/重启
-sudo systemctl start/stop/restart tunnel-reverse
-sudo systemctl enable/disable tunnel-reverse
+# 一键临时关闭/启动/重启（两个服务一起操作）
+sudo systemctl stop tunnel-reverse tunnel-socks5
+sudo systemctl start tunnel-reverse tunnel-socks5
+sudo systemctl restart tunnel-reverse tunnel-socks5
+
+# 关闭并取消开机自启
+sudo systemctl disable --now tunnel-reverse tunnel-socks5
+# 重新启用并立即启动
+sudo systemctl enable --now tunnel-reverse tunnel-socks5
 
 # 查看日志
 sudo journalctl -u tunnel-reverse -f
@@ -126,12 +132,24 @@ sudo journalctl -u tunnel-socks5 -f
 **Windows（NSSM）：**
 
 ```powershell
-# 查看状态
-& "C:\Program Files\nssm\nssm.exe" status ssh-tunnel-reverse
-& "C:\Program Files\nssm\nssm.exe" status ssh-tunnel-socks5
+# 设置 nssm 命令别名（一次设置，后续可直接用 nssm）
+$env:Path += ";C:\Program Files\nssm"
 
-# 启动/停止/重启
-& "C:\Program Files\nssm\nssm.exe" start/stop/restart ssh-tunnel-reverse
+# 查看状态
+nssm status ssh-tunnel-reverse
+nssm status ssh-tunnel-socks5
+
+# 一键临时关闭/启动/重启（两个服务一起操作）
+nssm stop ssh-tunnel-reverse ssh-tunnel-socks5
+nssm start ssh-tunnel-reverse ssh-tunnel-socks5
+nssm restart ssh-tunnel-reverse ssh-tunnel-socks5
+
+# 关闭并取消开机自启（改为手动启动）
+nssm set ssh-tunnel-reverse Start SERVICE_DEMAND_START
+nssm set ssh-tunnel-socks5 Start SERVICE_DEMAND_START
+# 重新启用开机自启
+nssm set ssh-tunnel-reverse Start SERVICE_AUTO_START
+nssm set ssh-tunnel-socks5 Start SERVICE_AUTO_START
 
 # 查看日志
 Get-Content "$env:ProgramData\ssh-tunnel-proxy\reverse-stdout.log" -Tail 20
