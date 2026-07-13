@@ -279,6 +279,7 @@ if [[ -f "${HOME}/.bashrc" ]] && ! grep -q "ssh-tunnel-proxy: auto ALL_PROXY" "$
         echo ""
         echo "# ssh-tunnel-proxy: auto ALL_PROXY"
         echo "if ss -tlnp 2>/dev/null | grep -q \":${SOCKS5_PORT} \"; then"
+        echo "    unset all_proxy http_proxy https_proxy 2>/dev/null || true"
         echo "    export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}"
         echo "else"
         echo "    unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy 2>/dev/null || true"
