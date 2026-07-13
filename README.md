@@ -31,7 +31,7 @@
 sudo bash install.sh --server root@你的服务器IP
 
 # 方式二：远程安装（只需输入一次中继服务器密码）
-curl -sSL https://raw.githubusercontent.com/你的用户名/ssh-tunnel-proxy/main/install.sh | \
+curl -sSL https://raw.githubusercontent.com/evaworks/ssh-tunnel-proxy/main/install.sh | \
   bash -s -- --server root@你的服务器IP
 ```
 
@@ -125,7 +125,7 @@ sudo systemctl restart tunnel-socks5
 sudo bash uninstall.sh
 
 # 方式二：远程卸载
-curl -sSL https://raw.githubusercontent.com/你的用户名/ssh-tunnel-proxy/main/uninstall.sh | bash
+curl -sSL https://raw.githubusercontent.com/evaworks/ssh-tunnel-proxy/main/uninstall.sh | bash
 ```
 
 卸载脚本会自动清理中继服务器（还原 GatewayPorts、关闭防火墙端口、重启 SSH 服务）。如果自动清理失败，再手动处理：

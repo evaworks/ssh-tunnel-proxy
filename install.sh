@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # ssh-tunnel-proxy — One-command SSH tunnel setup
-# https://github.com/USER/ssh-tunnel-proxy
+# https://github.com/evaworks/ssh-tunnel-proxy
 #
 # Let any Linux device:
 #   - access the internet via a relay server (SOCKS5 + sshuttle)
@@ -454,7 +454,7 @@ EOF
         sudo tee "$reverse_svc" > /dev/null << EOF
 [Unit]
 Description=ssh-tunnel-proxy: reverse tunnel (port ${TUNNEL_PORT})
-Documentation=https://github.com/USER/ssh-tunnel-proxy
+Documentation=https://github.com/evaworks/ssh-tunnel-proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -485,7 +485,7 @@ EOF
         sudo tee "$socks5_svc" > /dev/null << EOF
 [Unit]
 Description=ssh-tunnel-proxy: SOCKS5 proxy (port ${SOCKS5_PORT})
-Documentation=https://github.com/USER/ssh-tunnel-proxy
+Documentation=https://github.com/evaworks/ssh-tunnel-proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -515,7 +515,7 @@ EOF
         sudo tee "$sshuttle_svc" > /dev/null << EOF
 [Unit]
 Description=ssh-tunnel-proxy: sshuttle transparent proxy
-Documentation=https://github.com/USER/ssh-tunnel-proxy
+Documentation=https://github.com/evaworks/ssh-tunnel-proxy
 After=network-online.target
 Wants=network-online.target
 
