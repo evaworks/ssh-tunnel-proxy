@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+#
+# local-setup.sh
+# Configure reverse tunnel, SOCKS5 proxy, and sshuttle on the local machine.
+#
+# Normally called by install.sh, but can be run standalone:
+#   ./local-setup.sh --server user@host [--tunnel-port 2222] [--socks5-port 1080] [--ssh-port 22]
+#
+set -euo pipefail
+
+# ---- Defaults ----
+TUNNEL_PORT=2222
+SOCKS5_PORT=1080
+SSH_PORT=22
+SERVER=""
+ENABLE_SSHUTTLE=false
+DEPLOY_REVERSE=true
+DEPLOY_SOCKS5=true
+LOCAL_USER="$(whoami)"
+LOCAL_HOST="$(hostname -s)"
+CONFIG_DIR="/etc/ssh-tunnel-proxy"
+CONFIG_FILE="${CONFIG_DIR}/tunnel.conf"
+
+# ---- Parse args ----
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --server)          SERVER="$2"; shift 2 ;;
+        --tunnel-port)     TUNNEL_PORT="$2"; shift 2 ;;
+        --socks5-port)     SOCKS5_PORT="$2"; shift 2 ;;
+        --ssh-port)        SSH_PORT="$2"; shift 2 ;;
+        --enable-sshuttle) ENABLE_SSHUTTLE=true; shift ;;
+        --only-reverse)    DEPLOY_REVERSE=true; DEPLOY_SOCKS5=false; shift ;;
+        --only-socks5)     DEPLOY_REVERSE=false; DEPLOY_SOCKS5=true; shift ;;
+        *) echo "Unknown: $1"; exit 1 ;;
+    esac
+done
+
+if [[ -z "$SERVER" ]]; then
+    echo "Usage: $0 --server user@host [--tunnel-port 2222] [--socks5-port 1080] [--ssh-port 22] [--only-reverse] [--only-socks5]"
+    exit 1
+fi
+
+# ---- Detect re-deployment ----
+REDEPLOY=false
+if [[ -d "$CONFIG_DIR" ]]; then
+    REDEPLOY=true
+    echo "[local-setup] Existing installation detected"
+
+    # Clean up services no longer needed when switching deployment mode
+    if [[ "$DEPLOY_REVERSE" == false ]]; then
+        sudo systemctl stop tunnel-reverse.service 2>/dev/null || true
+        sudo systemctl disable tunnel-reverse.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/tunnel-reverse.service
+        echo "[local-setup] Removed: tunnel-reverse.service"
+    fi
+    if [[ "$DEPLOY_SOCKS5" == false ]]; then
+        sudo systemctl stop tunnel-socks5.service 2>/dev/null || true
+        sudo systemctl disable tunnel-socks5.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/tunnel-socks5.service
+        sudo systemctl stop tunnel-sshuttle.service 2>/dev/null || true
+        sudo systemctl disable tunnel-sshuttle.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/tunnel-sshuttle.service
+        echo "[local-setup] Removed: tunnel-socks5.service and tunnel-sshuttle.service"
+    fi
+    sudo systemctl daemon-reload
+fi
+
+# ---- Config directory ----
+sudo mkdir -p "$CONFIG_DIR"
+
+# ---- Environment file ----
+sudo tee "$CONFIG_FILE" > /dev/null << EOF
+# ssh-tunnel-proxy configuration
+TUNNEL_PORT=${TUNNEL_PORT}
+SOCKS5_PORT=${SOCKS5_PORT}
+SSH_PORT=${SSH_PORT}
+SERVER=${SERVER}
+LOCAL_USER=${LOCAL_USER}
+LOCAL_HOST=${LOCAL_HOST}
+EOF
+sudo chmod 644 "$CONFIG_FILE"
+echo "[local-setup] Config: ${CONFIG_FILE}"
+
+# ---- Reverse tunnel service ----
+if [[ "$DEPLOY_REVERSE" == true ]]; then
+sudo tee "/etc/systemd/system/tunnel-reverse.service" > /dev/null << EOF
+[Unit]
+Description=ssh-tunnel-proxy: reverse tunnel (port ${TUNNEL_PORT})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${LOCAL_USER}
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=/usr/bin/autossh -M 0 \\
+    -o "ServerAliveInterval=30" \\
+    -o "ServerAliveCountMax=3" \\
+    -o "ExitOnForwardFailure=yes" \\
+    -o "StrictHostKeyChecking=accept-new" \\
+    -p \${SSH_PORT} \\
+    -N -R \${TUNNEL_PORT}:localhost:22 \${SERVER}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "[local-setup] Created: tunnel-reverse.service"
+fi
+
+# ---- SOCKS5 proxy service ----
+if [[ "$DEPLOY_SOCKS5" == true ]]; then
+sudo tee "/etc/systemd/system/tunnel-socks5.service" > /dev/null << EOF
+[Unit]
+Description=ssh-tunnel-proxy: SOCKS5 proxy (port ${SOCKS5_PORT})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${LOCAL_USER}
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=/usr/bin/autossh -M 0 \\
+    -o "ServerAliveInterval=30" \\
+    -o "ServerAliveCountMax=3" \\
+    -o "StrictHostKeyChecking=accept-new" \\
+    -p \${SSH_PORT} \\
+    -N -D \${SOCKS5_PORT} \${SERVER}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "[local-setup] Created: tunnel-socks5.service"
+fi
+
+# ---- sshuttle service ----
+if [[ "$DEPLOY_SOCKS5" == true ]]; then
+sudo tee "/etc/systemd/system/tunnel-sshuttle.service" > /dev/null << EOF
+[Unit]
+Description=ssh-tunnel-proxy: sshuttle transparent proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=/usr/bin/sshuttle -r \${SERVER} \\
+    --ssh-cmd "ssh -p \${SSH_PORT}" \\
+    --daemon \\
+    --pidfile /run/tunnel-sshuttle.pid \\
+    0.0.0.0/0
+ExecStop=/bin/kill \$MAINPID
+PIDFile=/run/tunnel-sshuttle.pid
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "[local-setup] Created: tunnel-sshuttle.service"
+fi
+
+# ---- Reload & start ----
+sudo systemctl daemon-reload
+
+if [[ "$DEPLOY_REVERSE" == true ]]; then
+    sudo systemctl enable tunnel-reverse.service
+    if [[ "$REDEPLOY" == true ]] && systemctl is-active --quiet tunnel-reverse.service 2>/dev/null; then
+        sudo systemctl restart tunnel-reverse.service
+        echo "[local-setup] Restarted: tunnel-reverse"
+    else
+        sudo systemctl start tunnel-reverse.service
+        echo "[local-setup] Started: tunnel-reverse"
+    fi
+fi
+
+if [[ "$DEPLOY_SOCKS5" == true ]]; then
+    sudo systemctl enable tunnel-socks5.service
+    if [[ "$REDEPLOY" == true ]] && systemctl is-active --quiet tunnel-socks5.service 2>/dev/null; then
+        sudo systemctl restart tunnel-socks5.service
+        echo "[local-setup] Restarted: tunnel-socks5"
+    else
+        sudo systemctl start tunnel-socks5.service
+        echo "[local-setup] Started: tunnel-socks5"
+    fi
+fi
+
+if [[ "$DEPLOY_SOCKS5" == true ]]; then
+    if [[ "$ENABLE_SSHUTTLE" == true ]]; then
+        sudo systemctl enable tunnel-sshuttle.service
+        if [[ "$REDEPLOY" == true ]] && systemctl is-active --quiet tunnel-sshuttle.service 2>/dev/null; then
+            sudo systemctl restart tunnel-sshuttle.service
+            echo "[local-setup] Restarted: tunnel-sshuttle"
+        else
+            sudo systemctl start tunnel-sshuttle.service
+            echo "[local-setup] Started: tunnel-sshuttle"
+        fi
+    else
+        echo "[local-setup] sshuttle not started. Run: sudo systemctl enable --now tunnel-sshuttle.service"
+    fi
+elif [[ "$ENABLE_SSHUTTLE" == true ]]; then
+    echo "[local-setup] WARNING: --enable-sshuttle ignored with --only-reverse"
+fi
+
+echo "[local-setup] Complete"
