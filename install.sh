@@ -511,6 +511,24 @@ EOF
 
     # ---- sshuttle transparent proxy service (system level) ----
     if [[ "$DEPLOY_SOCKS5" == true ]]; then
+        # Write iptables cleanup helper
+        sudo tee /usr/local/bin/sshuttle-cleanup > /dev/null << 'CLEANUP'
+#!/bin/sh
+for c in $(iptables -t nat -L -n 2>/dev/null | sed -n 's/^Chain \(sshuttle-[0-9]*\).*/\1/p'); do
+    iptables -t nat -D PREROUTING -j "$c" 2>/dev/null
+    iptables -t nat -D OUTPUT -j "$c" 2>/dev/null
+    iptables -t nat -F "$c" 2>/dev/null
+    iptables -t nat -X "$c" 2>/dev/null
+done
+for c in $(iptables -L -n 2>/dev/null | sed -n 's/^Chain \(sshuttle-[0-9]*\).*/\1/p'); do
+    iptables -D INPUT -j "$c" 2>/dev/null
+    iptables -D OUTPUT -j "$c" 2>/dev/null
+    iptables -F "$c" 2>/dev/null
+    iptables -X "$c" 2>/dev/null
+done
+CLEANUP
+        sudo chmod +x /usr/local/bin/sshuttle-cleanup
+
         local sshuttle_svc="/etc/systemd/system/tunnel-sshuttle.service"
         sudo tee "$sshuttle_svc" > /dev/null << EOF
 [Unit]
@@ -520,22 +538,19 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=simple
 EnvironmentFile=${CONFIG_FILE}
 ExecStart=/usr/bin/sshuttle -r \${SERVER} \\
     --ssh-cmd "ssh -p \${SSH_PORT}" \\
-    --daemon \\
-    --pidfile /run/tunnel-sshuttle.pid \\
-    0.0.0.0/0
-ExecStop=/bin/kill \$MAINPID
-PIDFile=/run/tunnel-sshuttle.pid
+    0.0.0.0/0 --dns
+ExecStopPost=/usr/local/bin/sshuttle-cleanup
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
-        info "Created: tunnel-sshuttle.service (transparent TCP proxy)"
+        info "Created: tunnel-sshuttle.service (transparent TCP proxy with DNS)"
     fi
 
     # ---- Reload systemd ----

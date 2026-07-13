@@ -62,6 +62,23 @@ main() {
     done
     info "Removed service files from /etc/systemd/system/"
 
+    # Clean up sshuttle iptables rules
+    if command -v iptables &>/dev/null; then
+        for c in $(iptables -t nat -L -n 2>/dev/null | sed -n 's/^Chain \(sshuttle-[0-9]*\).*/\1/p'); do
+            sudo iptables -t nat -D PREROUTING -j "$c" 2>/dev/null || true
+            sudo iptables -t nat -D OUTPUT -j "$c" 2>/dev/null || true
+            sudo iptables -t nat -F "$c" 2>/dev/null || true
+            sudo iptables -t nat -X "$c" 2>/dev/null || true
+        done
+        for c in $(iptables -L -n 2>/dev/null | sed -n 's/^Chain \(sshuttle-[0-9]*\).*/\1/p'); do
+            sudo iptables -D INPUT -j "$c" 2>/dev/null || true
+            sudo iptables -D OUTPUT -j "$c" 2>/dev/null || true
+            sudo iptables -F "$c" 2>/dev/null || true
+            sudo iptables -X "$c" 2>/dev/null || true
+        done
+    fi
+    sudo rm -f /usr/local/bin/sshuttle-cleanup
+
     # Remove config directory
     if [[ -d "$CONFIG_DIR" ]]; then
         sudo rm -rf "$CONFIG_DIR"
