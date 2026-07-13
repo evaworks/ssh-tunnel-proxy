@@ -692,6 +692,10 @@ TUNNELSCRIPT
     if [[ -f "${HOME}/.bashrc" ]] && grep -q "$BASH_MARK" "${HOME}/.bashrc" 2>/dev/null; then
         info "ALL_PROXY already configured in ~/.bashrc"
     else
+        # Remove any stale static ALL_PROXY line that could conflict
+        if [[ -f "${HOME}/.bashrc" ]]; then
+            sed -i '/^export ALL_PROXY=socks5h/d' "${HOME}/.bashrc" 2>/dev/null || true
+        fi
         {
             echo ""
             echo "$BASH_MARK"

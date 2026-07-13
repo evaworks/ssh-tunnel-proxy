@@ -273,6 +273,8 @@ fi
 
 # ---- Dynamic ALL_PROXY in bashrc ----
 if [[ -f "${HOME}/.bashrc" ]] && ! grep -q "ssh-tunnel-proxy: auto ALL_PROXY" "${HOME}/.bashrc" 2>/dev/null; then
+    # Remove any stale static ALL_PROXY line that could conflict
+    sed -i '/^export ALL_PROXY=socks5h/d' "${HOME}/.bashrc" 2>/dev/null || true
     {
         echo ""
         echo "# ssh-tunnel-proxy: auto ALL_PROXY"
