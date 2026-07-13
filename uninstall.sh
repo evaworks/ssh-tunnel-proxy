@@ -104,13 +104,13 @@ main() {
     sudo rm -f /usr/local/bin/tunnel-proxy
     info "Removed: /usr/local/bin/tunnel-proxy"
 
-    # Remove ALL_PROXY from bashrc
+    # Remove tunnel-proxy config from bashrc
     if [[ -f "${HOME}/.bashrc" ]]; then
         local tmpfile
         tmpfile=$(mktemp)
-        sed '/^# ssh-tunnel-proxy: auto ALL_PROXY/,/^fi$/d' "${HOME}/.bashrc" > "$tmpfile" 2>/dev/null || true
+        sed '/^# ssh-tunnel-proxy: config/,/^# ssh-tunnel-proxy: end$/d' "${HOME}/.bashrc" > "$tmpfile" 2>/dev/null || true
         mv "$tmpfile" "${HOME}/.bashrc"
-        info "Removed ALL_PROXY config from ~/.bashrc"
+        info "Removed tunnel-proxy config from ~/.bashrc"
     fi
 
     # ---- Clean up relay server ----

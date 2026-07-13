@@ -271,21 +271,44 @@ TUNNELSCRIPT
     echo "[local-setup] Deployed: /usr/local/bin/tunnel-proxy"
 fi
 
-# ---- Dynamic ALL_PROXY in bashrc ----
-if [[ -f "${HOME}/.bashrc" ]] && ! grep -q "ssh-tunnel-proxy: auto ALL_PROXY" "${HOME}/.bashrc" 2>/dev/null; then
-    # Remove any stale static ALL_PROXY line that could conflict
+# ---- tunnel-proxy function + auto ALL_PROXY in bashrc ----
+if [[ -f "${HOME}/.bashrc" ]] && ! grep -q "^tunnel-proxy()" "${HOME}/.bashrc" 2>/dev/null; then
+    # Remove any old blocks
+    sed -i '/^# ssh-tunnel-proxy:/,/^# ssh-tunnel-proxy: end$/d' "${HOME}/.bashrc" 2>/dev/null || true
     sed -i '/^export ALL_PROXY=socks5h/d' "${HOME}/.bashrc" 2>/dev/null || true
     {
         echo ""
-        echo "# ssh-tunnel-proxy: auto ALL_PROXY"
+        echo "# ssh-tunnel-proxy: config"
+        echo "tunnel-proxy() {"
+        echo "    local cmd=\"\${1:-}\""
+        echo "    local socks5_port=${SOCKS5_PORT}"
+        echo "    case \"\$cmd\" in"
+        echo "        start|restart)"
+        echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
+        echo "            unset all_proxy http_proxy https_proxy 2>/dev/null || true"
+        echo "            export ALL_PROXY=socks5h://127.0.0.1:\$socks5_port"
+        echo "            ;;"
+        echo "        stop)"
+        echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
+        echo "            unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy 2>/dev/null || true"
+        echo "            ;;"
+        echo "        status)"
+        echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
+        echo "            ;;"
+        echo "        *)"
+        echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
+        echo "            ;;"
+        echo "    esac"
+        echo "}"
         echo "if ss -tlnp 2>/dev/null | grep -q \":${SOCKS5_PORT} \"; then"
         echo "    unset all_proxy http_proxy https_proxy 2>/dev/null || true"
         echo "    export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}"
         echo "else"
         echo "    unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy 2>/dev/null || true"
         echo "fi"
+        echo "# ssh-tunnel-proxy: end"
     } >> "${HOME}/.bashrc" 2>/dev/null || true
-    echo "[local-setup] Added dynamic ALL_PROXY to ~/.bashrc"
+    echo "[local-setup] Added tunnel-proxy function + auto ALL_PROXY to ~/.bashrc"
 fi
 
 echo "[local-setup] Complete"
