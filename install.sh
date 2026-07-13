@@ -642,6 +642,8 @@ set -euo pipefail
 CONFIG_DIR="/etc/ssh-tunnel-proxy"
 CONFIG_FILE="$CONFIG_DIR/tunnel.conf"
 ORIGINAL_USER="${SUDO_USER:-$USER}"
+ORIGINAL_UID=$(id -u "$ORIGINAL_USER" 2>/dev/null || echo 1000)
+DBUS_ADDR="unix:path=/run/user/${ORIGINAL_UID}/bus"
 SOCKS5_PORT=1080
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" 2>/dev/null || true
 
@@ -653,7 +655,7 @@ start_services() {
     sudo systemctl start tunnel-socks5.service 2>/dev/null || true
     echo "[tunnel-proxy] Services started"
     if command -v gsettings &>/dev/null && [[ -n "$ORIGINAL_USER" ]]; then
-        sudo -u "$ORIGINAL_USER" gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
+        sudo -u "$ORIGINAL_USER" DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR" gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
         echo "[tunnel-proxy] GNOME system proxy enabled"
     fi
     echo "[tunnel-proxy] To update this terminal, run: source ~/.bashrc"
@@ -665,7 +667,7 @@ stop_services() {
     sudo systemctl stop tunnel-socks5.service 2>/dev/null || true
     echo "[tunnel-proxy] Services stopped"
     if command -v gsettings &>/dev/null && [[ -n "$ORIGINAL_USER" ]]; then
-        sudo -u "$ORIGINAL_USER" gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
+        sudo -u "$ORIGINAL_USER" DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR" gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
         echo "[tunnel-proxy] GNOME system proxy disabled"
     fi
     echo "[tunnel-proxy] To clear proxy env vars in this terminal, run: source ~/.bashrc"
