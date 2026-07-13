@@ -656,6 +656,7 @@ start_services() {
         sudo -u "$ORIGINAL_USER" gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
         echo "[tunnel-proxy] GNOME system proxy enabled"
     fi
+    echo "[tunnel-proxy] To update this terminal, run: source ~/.bashrc"
 }
 
 stop_services() {
@@ -667,6 +668,7 @@ stop_services() {
         sudo -u "$ORIGINAL_USER" gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
         echo "[tunnel-proxy] GNOME system proxy disabled"
     fi
+    echo "[tunnel-proxy] To clear proxy env vars in this terminal, run: source ~/.bashrc"
 }
 
 status_services() {
@@ -686,7 +688,6 @@ TUNNELSCRIPT
     fi
 
     # ---- Dynamic ALL_PROXY in bashrc ----
-    local BASH_LINE='if ss -tlnp 2>/dev/null | grep -q ":${SOCKS5_PORT} "; then export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}; fi'
     local BASH_MARK="# ssh-tunnel-proxy: auto ALL_PROXY"
     if [[ -f "${HOME}/.bashrc" ]] && grep -q "$BASH_MARK" "${HOME}/.bashrc" 2>/dev/null; then
         info "ALL_PROXY already configured in ~/.bashrc"
@@ -696,6 +697,8 @@ TUNNELSCRIPT
             echo "$BASH_MARK"
             echo "if ss -tlnp 2>/dev/null | grep -q \":${SOCKS5_PORT} \"; then"
             echo "    export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}"
+            echo "else"
+            echo "    unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy 2>/dev/null || true"
             echo "fi"
         } >> "${HOME}/.bashrc" 2>/dev/null || true
         info "Added dynamic ALL_PROXY to ~/.bashrc"

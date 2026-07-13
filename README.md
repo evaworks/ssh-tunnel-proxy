@@ -123,7 +123,7 @@ sudo tunnel-proxy restart
 sudo tunnel-proxy status
 ```
 
-`ALL_PROXY` 环境变量已配置为动态检测——隧道运行时自动生效，关闭后新终端不会使用代理。如果当前终端需要立即更新，执行 `source ~/.bashrc`。
+`ALL_PROXY` 环境变量已配置为动态检测——隧道运行时自动生效，关闭后自动清除。执行 `tunnel-proxy start/stop` 后，运行 `source ~/.bashrc` 更新当前终端的环境变量。
 
 **Linux（systemd 原生命令）：**
 
