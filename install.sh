@@ -21,6 +21,8 @@ VERBOSE=false
 DRY_RUN=false
 DEPLOY_REVERSE=true
 DEPLOY_SOCKS5=true
+BYPASS_LAN=true
+BYPASS_SUBNETS="127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 LOCAL_USER="$(whoami)"
 LOCAL_HOST="$(hostname -s)"
@@ -106,6 +108,7 @@ Optional:
   --only-reverse           Deploy reverse tunnel only (skip SOCKS5)
   --only-socks5            Deploy SOCKS5 proxy only (skip reverse tunnel)
   --enable-sshuttle        Enable sshuttle transparent proxy automatically
+  --no-bypass-lan          Route LAN traffic through the tunnel too (default: bypass LAN)
   --verbose                Show detailed execution output
   --dry-run                Print what would be done without executing
   --help                   Show this help message
@@ -129,6 +132,7 @@ parse_args() {
             --socks5-port)     SOCKS5_PORT="$2"; shift 2 ;;
             --ssh-port)        SSH_PORT="$2"; shift 2 ;;
             --enable-sshuttle) ENABLE_SSHUTTLE=true; shift ;;
+            --no-bypass-lan)   BYPASS_LAN=false; shift ;;
             --only-reverse)    DEPLOY_REVERSE=true; DEPLOY_SOCKS5=false; shift ;;
             --only-socks5)     DEPLOY_REVERSE=false; DEPLOY_SOCKS5=true; shift ;;
             --verbose)         VERBOSE=true; shift ;;
@@ -185,7 +189,7 @@ preflight_check() {
 
     # Check local port availability
     if command -v ss &>/dev/null; then
-        if ss -tlnp 2>/dev/null | grep -q ":${SOCKS5_PORT} "; then
+        if ss -tln 2>/dev/null | grep -q ":${SOCKS5_PORT} "; then
             warn "Port ${SOCKS5_PORT} is already in use locally. Use --socks5-port to change it."
         fi
     fi
@@ -442,6 +446,8 @@ SERVER=${SERVER}
 LOCAL_USER=${LOCAL_USER}
 LOCAL_HOST=${LOCAL_HOST}
 SSH_KEY_TYPE=${SSH_KEY_TYPE}
+BYPASS_LAN=${BYPASS_LAN}
+BYPASS_SUBNETS="${BYPASS_SUBNETS}"
 EOF
         sudo chmod 644 "$CONFIG_FILE"
     fi
@@ -528,6 +534,14 @@ done
 CLEANUP
         sudo chmod +x /usr/local/bin/sshuttle-cleanup
 
+        local SSHUTTLE_EXCLUDE_ARGS=""
+        if [[ "$BYPASS_LAN" == true ]]; then
+            IFS=',' read -ra SUBNETS <<< "$BYPASS_SUBNETS"
+            for subnet in "${SUBNETS[@]}"; do
+                SSHUTTLE_EXCLUDE_ARGS+=" --exclude ${subnet}"
+            done
+        fi
+
         local sshuttle_svc="/etc/systemd/system/tunnel-sshuttle.service"
         sudo tee "$sshuttle_svc" > /dev/null << EOF
 [Unit]
@@ -541,6 +555,7 @@ Type=simple
 EnvironmentFile=${CONFIG_FILE}
 ExecStart=/usr/bin/sshuttle -r \${SERVER} \\
     --ssh-cmd "ssh -p \${SSH_PORT}" \\
+    ${SSHUTTLE_EXCLUDE_ARGS} \\
     0.0.0.0/0 --dns
 ExecStopPost=/usr/local/bin/sshuttle-cleanup
 Restart=on-failure
@@ -550,6 +565,9 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
         info "Created: tunnel-sshuttle.service (transparent TCP proxy with DNS)"
+        if [[ "$BYPASS_LAN" == true ]]; then
+            info "  LAN subnets excluded from tunnel: ${BYPASS_SUBNETS}"
+        fi
     fi
 
     # ---- Reload systemd ----
@@ -635,7 +653,13 @@ Host tunnel-proxy
     # ---- tunnel-proxy control script ----
     local TUNNEL_SCRIPT="/usr/local/bin/tunnel-proxy"
     if [[ ! -f "$TUNNEL_SCRIPT" ]]; then
-        sudo_run tee "$TUNNEL_SCRIPT" > /dev/null << 'TUNNELSCRIPT'
+        local CANONICAL_SCRIPT="$SCRIPT_DIR/scripts/tunnel-proxy.sh"
+        if [[ -f "$CANONICAL_SCRIPT" ]]; then
+            sudo_run cp "$CANONICAL_SCRIPT" "$TUNNEL_SCRIPT"
+            info "Installed tunnel-proxy from scripts/tunnel-proxy.sh (canonical source)"
+        else
+            # Fallback for standalone curl|bash installs (scripts/tunnel-proxy.sh not available)
+            sudo_run tee "$TUNNEL_SCRIPT" > /dev/null << 'TUNNELSCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -645,6 +669,8 @@ ORIGINAL_USER="${SUDO_USER:-$USER}"
 ORIGINAL_UID=$(id -u "$ORIGINAL_USER" 2>/dev/null || echo 1000)
 DBUS_ADDR="unix:path=/run/user/${ORIGINAL_UID}/bus"
 SOCKS5_PORT=1080
+BYPASS_LAN=true
+BYPASS_SUBNETS="127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" 2>/dev/null || true
 
 usage() { echo "Usage: tunnel-proxy {start|stop|status|restart}" >&2; exit 1; }
@@ -656,9 +682,16 @@ start_services() {
     echo "[tunnel-proxy] Services started"
     if command -v gsettings &>/dev/null && [[ -n "$ORIGINAL_USER" ]]; then
         sudo -u "$ORIGINAL_USER" DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR" gsettings set org.gnome.system.proxy mode 'manual' 2>/dev/null || true
+        if [[ "${BYPASS_LAN:-true}" == "true" ]]; then
+            sudo -u "$ORIGINAL_USER" DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR" gsettings set org.gnome.system.proxy ignore-hosts "['localhost', '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '*.local']" 2>/dev/null || true
+        fi
         echo "[tunnel-proxy] GNOME system proxy enabled"
     fi
     echo "[tunnel-proxy] To update this terminal, run: source ~/.bashrc"
+    if [[ "${BYPASS_LAN:-true}" == "true" ]]; then
+        echo "[tunnel-proxy] LAN bypass: ${BYPASS_SUBNETS}"
+        echo "[tunnel-proxy]   Use: source ~/.bashrc (sets ALL_PROXY + http_proxy + https_proxy + NO_PROXY)"
+    fi
 }
 
 stop_services() {
@@ -667,6 +700,7 @@ stop_services() {
     sudo systemctl stop tunnel-socks5.service 2>/dev/null || true
     echo "[tunnel-proxy] Services stopped"
     if command -v gsettings &>/dev/null && [[ -n "$ORIGINAL_USER" ]]; then
+        sudo -u "$ORIGINAL_USER" DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR" gsettings set org.gnome.system.proxy ignore-hosts "[]" 2>/dev/null || true
         sudo -u "$ORIGINAL_USER" DBUS_SESSION_BUS_ADDRESS="$DBUS_ADDR" gsettings set org.gnome.system.proxy mode 'none' 2>/dev/null || true
         echo "[tunnel-proxy] GNOME system proxy disabled"
     fi
@@ -679,17 +713,23 @@ status_services() {
     echo ""
     echo "=== SOCKS5 Proxy ==="
     systemctl status tunnel-socks5.service 2>/dev/null || echo "  (not installed)"
+    if [[ "${BYPASS_LAN:-true}" == "true" ]]; then
+        echo ""
+        echo "=== LAN Bypass ==="
+        echo "  Subnets: ${BYPASS_SUBNETS}"
+    fi
 }
 
 case "${1:-}" in start) start_services ;; stop) stop_services ;; restart) stop_services; sleep 1; start_services ;; status) status_services ;; *) usage ;; esac
 TUNNELSCRIPT
+            info "Deployed: /usr/local/bin/tunnel-proxy (standalone install)"
+        fi
         sudo_run chmod +x "$TUNNEL_SCRIPT"
-        info "Deployed: /usr/local/bin/tunnel-proxy"
     else
         info "Already exists: /usr/local/bin/tunnel-proxy"
     fi
 
-    # ---- tunnel-proxy function + auto ALL_PROXY in bashrc ----
+    # ---- tunnel-proxy function + auto ALL_PROXY + NO_PROXY in bashrc ----
     local BASH_MARK="# ssh-tunnel-proxy: config"
     if [[ -f "${HOME}/.bashrc" ]] && grep -q "^tunnel-proxy()" "${HOME}/.bashrc" 2>/dev/null; then
         info "tunnel-proxy function already exists in ~/.bashrc"
@@ -697,21 +737,35 @@ TUNNELSCRIPT
         # Remove any old static or dynamic ALL_PROXY blocks
         sed -i '/^# ssh-tunnel-proxy:/,/^# ssh-tunnel-proxy: end$/d' "${HOME}/.bashrc" 2>/dev/null || true
         sed -i '/^export ALL_PROXY=socks5h/d' "${HOME}/.bashrc" 2>/dev/null || true
+        # Build NO_PROXY value
+        # NOTE: CIDR notation (e.g. 10.0.0.0/8) is supported by curl, wget, pip, npm, and most modern tools.
+        # Some older tools may only support wildcard/domain patterns in NO_PROXY.
+        local no_proxy_val="localhost,*.local"
+        if [[ "$BYPASS_LAN" == true ]]; then
+            no_proxy_val="${no_proxy_val},${BYPASS_SUBNETS}"
+        fi
         {
             echo ""
             echo "# ssh-tunnel-proxy: config"
             echo "tunnel-proxy() {"
             echo "    local cmd=\"\${1:-}\""
             echo "    local socks5_port=${SOCKS5_PORT}"
+            echo "    local no_proxy_val=\"${no_proxy_val}\""
             echo "    case \"\$cmd\" in"
             echo "        start|restart)"
             echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
-            echo "            unset all_proxy http_proxy https_proxy 2>/dev/null || true"
+            echo "            unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy 2>/dev/null || true"
             echo "            export ALL_PROXY=socks5h://127.0.0.1:\$socks5_port"
+            echo "            export HTTP_PROXY=\"\$ALL_PROXY\""
+            echo "            export HTTPS_PROXY=\"\$ALL_PROXY\""
+            echo "            export http_proxy=\"\$ALL_PROXY\""
+            echo "            export https_proxy=\"\$ALL_PROXY\""
+            echo "            export NO_PROXY=\"\$no_proxy_val\""
+            echo "            export no_proxy=\"\$NO_PROXY\""
             echo "            ;;"
             echo "        stop)"
             echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
-            echo "            unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy 2>/dev/null || true"
+            echo "            unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy 2>/dev/null || true"
             echo "            ;;"
             echo "        status)"
             echo "            sudo /usr/local/bin/tunnel-proxy \"\$@\""
@@ -721,15 +775,21 @@ TUNNELSCRIPT
             echo "            ;;"
             echo "    esac"
             echo "}"
-            echo "if ss -tlnp 2>/dev/null | grep -q \":${SOCKS5_PORT} \"; then"
-            echo "    unset all_proxy http_proxy https_proxy 2>/dev/null || true"
+            echo "if ss -tln 2>/dev/null | grep -q \":${SOCKS5_PORT} \"; then"
+            echo "    unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy 2>/dev/null || true"
             echo "    export ALL_PROXY=socks5h://127.0.0.1:${SOCKS5_PORT}"
+            echo "    export HTTP_PROXY=\"\$ALL_PROXY\""
+            echo "    export HTTPS_PROXY=\"\$ALL_PROXY\""
+            echo "    export http_proxy=\"\$ALL_PROXY\""
+            echo "    export https_proxy=\"\$ALL_PROXY\""
+            echo "    export NO_PROXY=\"${no_proxy_val}\""
+            echo "    export no_proxy=\"\$NO_PROXY\""
             echo "else"
-            echo "    unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy 2>/dev/null || true"
+            echo "    unset ALL_PROXY all_proxy HTTP_PROXY http_proxy HTTPS_PROXY https_proxy NO_PROXY no_proxy 2>/dev/null || true"
             echo "fi"
             echo "# ssh-tunnel-proxy: end"
         } >> "${HOME}/.bashrc" 2>/dev/null || true
-        info "Added tunnel-proxy function + auto ALL_PROXY to ~/.bashrc"
+        info "Added tunnel-proxy function + auto ALL_PROXY/HTTP_PROXY/HTTPS_PROXY + NO_PROXY to ~/.bashrc"
     fi
 }
 
@@ -789,6 +849,12 @@ print_instructions() {
         echo ""
         echo -e "  ${YELLOW}Transparent proxy (sshuttle):${NC}"
         echo -e "    sudo systemctl enable --now tunnel-sshuttle.service${NC}"
+        echo ""
+    fi
+    if [[ "$BYPASS_LAN" == true ]]; then
+        echo -e "  ${YELLOW}LAN bypass:${NC}"
+        echo -e "    Local subnets excluded from proxy: ${BYPASS_SUBNETS}${NC}"
+        echo -e "    Set NO_PROXY for current shell: export NO_PROXY=\"localhost,*.local,${BYPASS_SUBNETS}\"${NC}"
         echo ""
     fi
     echo -e "  ${YELLOW}Manage services:${NC}"

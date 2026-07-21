@@ -25,7 +25,8 @@ param(
     [int]$Socks5Port = 1080,
     [int]$SshPort = 22,
     [switch]$OnlyReverse,
-    [switch]$OnlySocks5
+    [switch]$OnlySocks5,
+    [switch]$NoBypassLan
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +39,8 @@ $LocalUser = [Environment]::UserName
 $LocalHost = [Environment]::MachineName
 $DeployReverse = -not $OnlySocks5
 $DeploySocks5 = -not $OnlyReverse
+$BypassLan = -not $NoBypassLan
+$BypassSubnets = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 function Info { Write-Host "[local-setup] $($args[0])" -ForegroundColor Green }
 function Warn { Write-Host "[local-setup] WARNING: $($args[0])" -ForegroundColor Yellow }
@@ -76,13 +79,15 @@ if (-not (Test-Path $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir
 
 # ---- Config file (JSON) ----
 $config = @{
-    tunnelPort  = $TunnelPort
-    socks5Port  = $Socks5Port
-    sshPort     = $SshPort
-    server      = $Server
-    localUser   = $LocalUser
-    localHost   = $LocalHost
-    installedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    tunnelPort      = $TunnelPort
+    socks5Port      = $Socks5Port
+    sshPort         = $SshPort
+    server          = $Server
+    localUser       = $LocalUser
+    localHost       = $LocalHost
+    bypassLan       = $BypassLan
+    noProxySubnets  = $BypassSubnets
+    installedAt     = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 }
 $config | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
 Info "Config: $ConfigFile"

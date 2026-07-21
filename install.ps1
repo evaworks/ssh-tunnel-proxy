@@ -20,6 +20,8 @@
     [Ignored on Windows] sshuttle is not supported on Windows
 .PARAMETER Verbose
     Show detailed execution output
+.PARAMETER NoBypassLan
+    Route LAN traffic through the tunnel too (default: bypass LAN subnets)
 .EXAMPLE
     .\install.ps1 -Server root@1.2.3.4
 .EXAMPLE
@@ -35,7 +37,8 @@ param(
     [switch]$OnlyReverse,
     [switch]$OnlySocks5,
     [switch]$EnableSshuttle,
-    [switch]$Verbose
+    [switch]$Verbose,
+    [switch]$NoBypassLan
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +58,8 @@ $NssmTemp = "$env:TEMP\nssm-2.24"
 
 $DeployReverse = -not $OnlySocks5
 $DeploySocks5 = -not $OnlyReverse
+$BypassLan = -not $NoBypassLan
+$BypassSubnets = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 $LocalUser = [Environment]::UserName
 $LocalHost = [Environment]::MachineName
 
@@ -350,13 +355,15 @@ function Invoke-LocalSetup {
 
     # ---- Config file (JSON) ----
     $config = @{
-        tunnelPort  = $TunnelPort
-        socks5Port  = $Socks5Port
-        sshPort     = $SshPort
-        server      = $Server
-        localUser   = $LocalUser
-        localHost   = $LocalHost
-        installedAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        tunnelPort      = $TunnelPort
+        socks5Port      = $Socks5Port
+        sshPort         = $SshPort
+        server          = $Server
+        localUser       = $LocalUser
+        localHost       = $LocalHost
+        bypassLan       = $BypassLan
+        noProxySubnets  = $BypassSubnets
+        installedAt     = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     }
     $config | ConvertTo-Json | Set-Content -Path $ConfigFile -Encoding UTF8
     Info "Config file: $ConfigFile"
@@ -482,6 +489,13 @@ function Set-SystemProxy { param([int]$Port)
         $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
         Set-ItemProperty -Path $regPath -Name ProxyServer -Value "127.0.0.1:$Port" -ErrorAction Stop
         Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 1 -ErrorAction Stop
+        if ($BypassLan) {
+            $override = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>"
+            Set-ItemProperty -Path $regPath -Name ProxyOverride -Value $override -ErrorAction Stop
+            Info "LAN bypass enabled (excluded from proxy)"
+        } else {
+            Set-ItemProperty -Path $regPath -Name ProxyOverride -Value "" -ErrorAction SilentlyContinue
+        }
         Info "System proxy set to SOCKS5 127.0.0.1:$Port"
         Info "Note: Not all applications respect Windows system proxy settings."
         Info "      For curl/cargo/etc, use: `$env:ALL_PROXY='socks5h://127.0.0.1:$Port'"
@@ -532,7 +546,15 @@ function Deploy-TunnelProxyScript {
     if (-not (Test-Path $scriptDir)) { New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null }
 
     $scriptPath = "$scriptDir\tunnel-proxy.ps1"
-    $scriptContent = @'
+
+    # Try canonical source first
+    $canonicalScript = Join-Path $PSScriptRoot "scripts\tunnel-proxy.ps1"
+    if (Test-Path $canonicalScript) {
+        Copy-Item -Path $canonicalScript -Destination $scriptPath -Force
+        Info "Installed tunnel-proxy from scripts\tunnel-proxy.ps1 (canonical source)"
+    } else {
+        # Fallback for standalone installs
+        $scriptContent = @'
 <#
 .SYNOPSIS
     Unified control for ssh-tunnel-proxy
@@ -547,10 +569,14 @@ $ConfigFile = "$ConfigDir\tunnel.json"
 $NssmExe = "$env:ProgramFiles\nssm\nssm.exe"
 
 $Socks5Port = 1080
+$BypassLan = $true
+$NoProxySubnets = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 if (Test-Path $ConfigFile) {
     try {
         $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
         if ($cfg.socks5Port) { $Socks5Port = $cfg.socks5Port }
+        if ($cfg.PSObject.Properties.Name -contains "bypassLan") { $BypassLan = $cfg.bypassLan }
+        if ($cfg.noProxySubnets) { $NoProxySubnets = $cfg.noProxySubnets }
     } catch {}
 }
 
@@ -558,11 +584,18 @@ function Set-SystemProxy { param([int]$Port)
     $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
     Set-ItemProperty -Path $regPath -Name ProxyServer -Value "127.0.0.1:$Port" -ErrorAction SilentlyContinue
     Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 1 -ErrorAction SilentlyContinue
+    if ($BypassLan) {
+        $override = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;<local>"
+        Set-ItemProperty -Path $regPath -Name ProxyOverride -Value $override -ErrorAction SilentlyContinue
+    } else {
+        Set-ItemProperty -Path $regPath -Name ProxyOverride -Value "" -ErrorAction SilentlyContinue
+    }
     Write-Host "[tunnel-proxy] System proxy enabled (127.0.0.1:$Port)"
 }
 function Clear-SystemProxy {
     $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
     Set-ItemProperty -Path $regPath -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $regPath -Name ProxyOverride -Value "" -ErrorAction SilentlyContinue
     Write-Host "[tunnel-proxy] System proxy disabled"
 }
 
@@ -573,6 +606,9 @@ switch ($Action) {
         & $NssmExe start ssh-tunnel-socks5 2>$null
         Write-Host "[tunnel-proxy] Services started"
         Set-SystemProxy $Socks5Port
+        if ($BypassLan) {
+            Write-Host "[tunnel-proxy] LAN bypass: $NoProxySubnets"
+        }
     }
     "stop" {
         Write-Host "[tunnel-proxy] Stopping services..."
@@ -589,6 +625,9 @@ switch ($Action) {
         & $NssmExe start ssh-tunnel-socks5 2>$null
         Write-Host "[tunnel-proxy] Services restarted"
         Set-SystemProxy $Socks5Port
+        if ($BypassLan) {
+            Write-Host "[tunnel-proxy] LAN bypass: $NoProxySubnets"
+        }
     }
     "status" {
         Write-Host "=== Reverse Tunnel ==="
@@ -598,11 +637,17 @@ switch ($Action) {
         Write-Host "=== SOCKS5 Proxy ==="
         $s = & $NssmExe status ssh-tunnel-socks5 2>$null
         if ($LASTEXITCODE -eq 0) { Write-Host "  $s" } else { Write-Host "  (not installed)" }
+        if ($BypassLan) {
+            Write-Host ""
+            Write-Host "=== LAN Bypass ==="
+            Write-Host "  Subnets: $NoProxySubnets"
+        }
     }
 }
 '@
-
-    Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
+        Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
+        Info "Deployed: $scriptPath (standalone install)"
+    }
 
     # Add to PATH for current user if not already there
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -612,7 +657,6 @@ switch ($Action) {
         Info "Added $scriptDir to user PATH"
     }
 
-    Info "Deployed: $scriptPath"
     Info "  Usage: tunnel-proxy {start|stop|status|restart}"
 }
 
@@ -659,6 +703,11 @@ function Print-Instructions {
         Write-Host "`n  Test internet access via SOCKS5 proxy:" -ForegroundColor Yellow
         Write-Host "    curl --socks5-hostname 127.0.0.1:${Socks5Port} https://www.google.com"
         Write-Host "`n  System proxy set to 127.0.0.1:${Socks5Port}" -ForegroundColor Yellow
+    }
+
+    if ($BypassLan) {
+        Write-Host "`n  LAN bypass:" -ForegroundColor Yellow
+        Write-Host "    Local subnets excluded from proxy: $BypassSubnets" -ForegroundColor Yellow
     }
 
     Write-Host "`n  Manage services:" -ForegroundColor Yellow
