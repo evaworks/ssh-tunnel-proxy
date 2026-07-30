@@ -89,6 +89,24 @@ ssh -J root@中继IP 你的用户名@localhost -p 2222
 ssh tunnel-proxy
 ```
 
+### 启动 & 关闭（快速参考）
+
+```bash
+# ─── 日常开关 ───
+tunnel-proxy start      # 启动隧道 + 开启系统代理
+tunnel-proxy stop       # 关闭隧道 + 关闭系统代理
+
+# ─── 开机自启（执行一次，重启后自动运行） ───
+sudo systemctl enable tunnel-socks5.service tunnel-reverse.service
+
+# ─── 取消开机自启 ───
+sudo systemctl disable tunnel-socks5.service tunnel-reverse.service
+
+# ─── 立即启动/停止/重启 + 设置开机自启 ───
+sudo systemctl enable --now tunnel-socks5.service tunnel-reverse.service
+sudo systemctl disable --now tunnel-socks5.service tunnel-reverse.service
+```
+
 ### 本机通过代理访问外网
 
 ```bash
