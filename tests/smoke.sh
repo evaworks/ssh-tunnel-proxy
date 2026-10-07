@@ -19,6 +19,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== 1. shell syntax =="
+# Editing these files programmatically has silently dropped the exec bit before.
+for f in install.sh uninstall.sh; do
+    if [ -x "$f" ]; then ok "$f is executable"; else bad "$f lost its executable bit"; fi
+done
 for f in install.sh uninstall.sh scripts/*.sh tests/smoke.sh; do
     if bash -n "$f" 2>/dev/null; then ok "$f"; else bad "$f (bash -n)"; fi
 done
