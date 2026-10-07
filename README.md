@@ -154,6 +154,15 @@ sudo tunnel-proxy global         # 只切模式，不重启服务
 sudo tunnel-proxy local          # 切回环境变量模式
 ```
 
+换一台中继服务器（如果你有多台）：
+
+```bash
+tunnel-proxy server                                   # 看当前用的是哪台
+sudo tunnel-proxy server root@1.2.3.4                 # 切换过去（自动重启服务）
+sudo tunnel-proxy server root@1.2.3.4 --ssh-port 2200 --tunnel-port 2222
+sudo tunnel-proxy server root@1.2.3.4 --cleanup-old   # 顺带回滚旧中继的 GatewayPorts/防火墙
+```
+
 其余为高级/排障命令：
 
 ```bash

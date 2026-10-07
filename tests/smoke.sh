@@ -86,7 +86,11 @@ end_count="$(grep -c '^# ssh-tunnel-proxy: end$' "$WORK/rc" 2>/dev/null || echo 
 [[ "$start_count" == "1" && "$end_count" == "1" ]] && ok "block is idempotent (1 start / 1 end)" \
     || bad "block not idempotent (start=$start_count end=$end_count)"
 bash -n "$WORK/rc" && ok "generated rc snippet is valid bash" || bad "generated rc snippet has a syntax error"
-if bash -c "source '$WORK/rc'; [ -z \"\${ALL_PROXY:-}\" ]"; then
+# Use an isolated config + a port nothing listens on, so this assertion does not
+# depend on whether the real machine currently runs the tunnel.
+mkdir -p "$WORK/rc-conf"
+printf 'SOCKS5_PORT=59999\nBYPASS_LAN=true\nBYPASS_SUBNETS="10.0.0.0/8"\n' > "$WORK/rc-conf/tunnel.conf"
+if SSH_TUNNEL_PROXY_CONF_DIR="$WORK/rc-conf" bash -c "source '$WORK/rc'; [ -z \"\${ALL_PROXY:-}\" ]"; then
     ok "proxy env vars stay unset when nothing listens"
 else
     bad "proxy env vars set without a listener"
@@ -595,6 +599,31 @@ grep -q '^PROXY_MODE=env$' "$METC/tunnel.conf" && ok "mode env switches back" \
 run_tp_m mode bogus >/dev/null 2>&1 && bad "mode accepted an invalid value" \
     || ok "mode rejects an invalid value"
 
+# Relay server switching (several relays)
+SHOME="$WORK/serverhome"; mkdir -p "$SHOME"
+run_tp_s() {
+    PATH="$TBIN:$PATH" HOME="$SHOME" SSH_TUNNEL_PROXY_CONF_DIR="$METC" SSH_TUNNEL_PROXY_SYSTEMD_DIR="$TSYS" \
+        bash scripts/tunnel-proxy.sh "$@"
+}
+srv_out="$(run_tp_s server 2>/dev/null || true)"
+case "$srv_out" in
+    *"relay server :"*) ok "server reports the current relay" ;;
+    *) bad "server did not report the current relay" ;;
+esac
+
+run_tp_s server root@relay2 --ssh-port 2200 >/dev/null 2>&1
+grep -q '^SERVER=root@relay2$' "$METC/tunnel.conf" && ok "server switch writes SERVER" \
+    || bad "server switch did not update SERVER"
+grep -q '^SSH_PORT=2200$' "$METC/tunnel.conf" && ok "server switch writes the SSH port" \
+    || bad "server switch did not update SSH_PORT"
+grep -q 'ProxyJump root@relay2:2200' "$SHOME/.ssh/config" && ok "server switch refreshes ~/.ssh/config" \
+    || bad "server switch did not refresh the SSH config entry"
+
+run_tp_s server bogus >/dev/null 2>&1 && bad "server accepted a host without user@" \
+    || ok "server requires user@host"
+run_tp_s server root@x --ssh-port 99999 >/dev/null 2>&1 && bad "server accepted an invalid port" \
+    || ok "server rejects an invalid port"
+
 # Short aliases
 run_tp_m global >/dev/null 2>&1
 grep -q '^PROXY_MODE=global$' "$METC/tunnel.conf" && ok "global is a shortcut for mode global" \
@@ -638,6 +667,16 @@ if command -v systemd-analyze >/dev/null 2>&1; then
             ok "$u.service passes systemd-analyze verify"
         fi
     done
+    # Unquoted heredocs: a backtick would run a command while rendering.
+    render_bodies="$(sed -n '/^render_unit_reverse() {/,/^}/p;/^render_unit_socks5() {/,/^}/p;/^render_unit_sshuttle() {/,/^}/p' install.sh)"
+    if printf '%s' "$render_bodies" | grep -qF '`'; then
+        bad "unit templates contain backticks (command substitution in an unquoted heredoc)"
+    else
+        ok "unit templates contain no backticks"
+    fi
+    grep -q "tunnel-proxy check" "$WORK/r.service" && ok "rendered unit keeps its comment text intact" \
+        || bad "rendered unit lost comment text (substitution leaked)"
+
     if grep -q "^StartLimit" "$WORK/r.service" "$WORK/s.service" "$WORK/t.service"; then
         bad "tunnel units must not be rate-limited (would break reconnect-forever)"
     else
@@ -693,6 +732,27 @@ if [ -z "$doc_missing" ]; then
 else
     bad "docs/CLI.md is missing:$doc_missing"
 fi
+
+echo "== 13. install log is never fatal =="
+mkdir -p "$WORK/loghome"
+fallback_log="$(bash -c '
+    source ./install.sh
+    LOG_FILE=/proc/self/definitely-not-writable.log
+    HOME="$1"
+    init_log
+    printf "%s" "$LOG_FILE"
+' _ "$WORK/loghome" 2>/dev/null)"
+if [ "$fallback_log" = "$WORK/loghome/.ssh-tunnel-proxy-install.log" ]; then
+    ok "unwritable log path falls back to \$HOME"
+else
+    bad "log fallback picked '$fallback_log'"
+fi
+
+survived="$(bash -c 'source ./install.sh; LOG_FILE=/proc/self/nope.log; log "hello"; echo survived' 2>/dev/null)"
+case "$survived" in
+    *survived*) ok "log() never fails the script" ;;
+    *) bad "log() broke the script" ;;
+esac
 
 echo
 echo "----------------------------------------"

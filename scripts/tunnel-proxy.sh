@@ -50,6 +50,9 @@ Common:
   tunnel-proxy off             stop tunnels and clear proxy variables
   tunnel-proxy status          show the current state (add --json for scripts)
   tunnel-proxy global | local  switch between all-traffic and proxy-variable mode
+  tunnel-proxy server          show the relay server
+  tunnel-proxy server user@host [--ssh-port N] [--tunnel-port N] [--cleanup-old]
+                               point the tunnel at another relay server
 
 Advanced:
   tunnel-proxy doctor [--deep] [--relay]   end-to-end health check
@@ -751,6 +754,168 @@ env_cmd() {
     return 0
 }
 
+# Write KEY=VALUE into tunnel.conf (replace the line, or append it).
+config_set() {
+    local key="$1" value="$2"
+    if grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+        sudo sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE"
+    else
+        printf '%s=%s\n' "$key" "$value" | sudo tee -a "$CONFIG_FILE" >/dev/null
+    fi
+    printf -v "$key" '%s' "$value"
+}
+
+# Refresh the managed "Host tunnel-proxy" entry in ~/.ssh/config.
+update_ssh_config_entry() {
+    local ssh_config="${HOME}/.ssh/config"
+    local cfg_user="${LOCAL_USER:-$(id -un)}"
+    local cfg_host="${LOCAL_HOST:-$(hostname -s 2>/dev/null || echo host)}"
+    local server_jump="$SERVER"
+    [[ "$SSH_PORT" -ne 22 ]] && server_jump="${SERVER}:${SSH_PORT}"
+
+    mkdir -p "$(dirname "$ssh_config")" 2>/dev/null || true
+    [[ -f "$ssh_config" ]] || : > "$ssh_config"
+
+    if grep -q "^# ssh-tunnel-proxy:" "$ssh_config" 2>/dev/null; then
+        local tmp
+        tmp="$(mktemp)"
+        awk '
+            /^# ssh-tunnel-proxy:/ { inblock = 1; next }
+            inblock && /^Host tunnel-proxy[[:space:]]*$/ { next }
+            inblock && /^[[:space:]]/ { next }
+            inblock && /^[[:space:]]*$/ { inblock = 0; next }
+            { print }
+        ' "$ssh_config" > "$tmp"
+        mv "$tmp" "$ssh_config"
+    fi
+
+    {
+        echo ""
+        echo "# ssh-tunnel-proxy: ${cfg_host}"
+        echo "Host tunnel-proxy"
+        echo "    HostName localhost"
+        echo "    Port ${TUNNEL_PORT}"
+        echo "    ProxyJump ${server_jump}"
+        echo "    User ${cfg_user}"
+        echo "    ServerAliveInterval 30"
+        echo "    ServerAliveCountMax 3"
+    } >> "$ssh_config"
+    chmod 600 "$ssh_config" 2>/dev/null || true
+}
+
+# Best effort: revert GatewayPorts / close the tunnel port on a relay we are no
+# longer using (needs key access to the old server).
+cleanup_old_relay() {
+    local old_server="$1" old_ssh_port="$2" old_tunnel_port="$3"
+    local ssh_arg=()
+    [[ "$old_ssh_port" -ne 22 ]] && ssh_arg=(-p "$old_ssh_port")
+    echo "[tunnel-proxy] cleaning up old relay ${old_server} ..."
+    if timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=8 "${ssh_arg[@]+"${ssh_arg[@]}"}" "$old_server" \
+            "sudo bash -s -- ${old_tunnel_port}" <<'OLDRELAY' 2>/dev/null
+#!/usr/bin/env bash
+set -euo pipefail
+TUNNEL_PORT="${1:-}"
+BACKUP_FILE="/etc/ssh/sshd_config.bak.ssh-tunnel-proxy"
+if [[ -f "$BACKUP_FILE" ]]; then
+    cp "$BACKUP_FILE" /etc/ssh/sshd_config
+    rm -f "$BACKUP_FILE"
+else
+    sed -i -E '/^[[:space:]]*#*[[:space:]]*GatewayPorts[[:space:]]/d' /etc/ssh/sshd_config
+fi
+if sshd -t 2>/dev/null; then
+    systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+fi
+if [[ -n "$TUNNEL_PORT" ]]; then
+    if command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --remove-port="${TUNNEL_PORT}/tcp" --permanent 2>/dev/null && firewall-cmd --reload 2>/dev/null || true
+    elif command -v ufw &>/dev/null; then
+        ufw delete allow "${TUNNEL_PORT}/tcp" 2>/dev/null || true
+    elif command -v iptables &>/dev/null; then
+        iptables -D INPUT -p tcp --dport "${TUNNEL_PORT}" -j ACCEPT 2>/dev/null || true
+    fi
+fi
+echo "[old-relay] reverted GatewayPorts and closed port ${TUNNEL_PORT}"
+OLDRELAY
+    then
+        echo "[tunnel-proxy] old relay cleaned up"
+    else
+        echo "[tunnel-proxy] WARNING: could not clean up ${old_server} (unreachable or no key)" >&2
+        echo "[tunnel-proxy]   manual: ssh ${old_server} 'sudo sed -i \"/GatewayPorts/d\" /etc/ssh/sshd_config && sudo systemctl restart sshd'" >&2
+    fi
+    return 0
+}
+
+# Show or change the relay server (useful when you own several of them).
+server_cmd() {
+    local new_server="" new_ssh_port="" new_tunnel_port="" do_cleanup=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ssh-port)    new_ssh_port="${2:-}"; shift 2 ;;
+            --tunnel-port) new_tunnel_port="${2:-}"; shift 2 ;;
+            --cleanup-old) do_cleanup=true; shift ;;
+            --*)  echo "Usage: tunnel-proxy server [user@host] [--ssh-port N] [--tunnel-port N] [--cleanup-old]" >&2; return 1 ;;
+            *)    new_server="$1"; shift ;;
+        esac
+    done
+
+    if [[ -z "$new_server" ]]; then
+        echo "[tunnel-proxy] relay server : ${SERVER:-<unset>}"
+        echo "[tunnel-proxy] ssh port     : ${SSH_PORT}"
+        echo "[tunnel-proxy] tunnel port  : ${TUNNEL_PORT}"
+        echo "[tunnel-proxy] to change    : sudo tunnel-proxy server user@host [--ssh-port N] [--tunnel-port N]"
+        return 0
+    fi
+
+    if [[ "$new_server" != *"@"* ]]; then
+        echo "[tunnel-proxy] ERROR: server must look like user@host (got: ${new_server})" >&2
+        return 1
+    fi
+    local p
+    for p in "$new_ssh_port" "$new_tunnel_port"; do
+        [[ -z "$p" ]] && continue
+        if [[ ! "$p" =~ ^[0-9]+$ ]] || (( 10#$p < 1 || 10#$p > 65535 )); then
+            echo "[tunnel-proxy] ERROR: '${p}' is not a valid port (1-65535)" >&2
+            return 1
+        fi
+    done
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "[tunnel-proxy] ERROR: ${CONFIG_FILE} not found" >&2
+        return 1
+    fi
+
+    local old_server="$SERVER" old_ssh_port="$SSH_PORT" old_tunnel_port="$TUNNEL_PORT"
+    local was_active=false
+    if service_active tunnel-reverse.service || service_active tunnel-socks5.service; then
+        was_active=true
+    fi
+
+    config_set SERVER "$new_server"
+    [[ -n "$new_ssh_port" ]] && config_set SSH_PORT "$new_ssh_port"
+    [[ -n "$new_tunnel_port" ]] && config_set TUNNEL_PORT "$new_tunnel_port"
+    echo "[tunnel-proxy] relay server -> ${SERVER} (ssh port ${SSH_PORT}, tunnel port ${TUNNEL_PORT})"
+
+    update_ssh_config_entry
+    echo "[tunnel-proxy] updated ${HOME}/.ssh/config (Host tunnel-proxy)"
+
+    if [[ "$was_active" == true ]]; then
+        echo "[tunnel-proxy] restarting services..."
+        sudo systemctl restart tunnel-reverse.service 2>/dev/null || true
+        sudo systemctl restart tunnel-socks5.service 2>/dev/null || true
+        if have_sshuttle && service_active tunnel-sshuttle.service; then
+            sudo systemctl restart tunnel-sshuttle.service 2>/dev/null || true
+        fi
+    fi
+
+    if [[ "$do_cleanup" == true && -n "$old_server" && "$old_server" != "$SERVER" ]]; then
+        cleanup_old_relay "$old_server" "$old_ssh_port" "$old_tunnel_port"
+    elif [[ -n "$old_server" && "$old_server" != "$SERVER" ]]; then
+        echo "[tunnel-proxy] note: old relay ${old_server} was left untouched (use --cleanup-old to revert it)"
+    fi
+
+    echo "[tunnel-proxy] verify with: sudo tunnel-proxy doctor"
+    return 0
+}
+
 # Switch between env mode (SOCKS proxy variables) and global mode (sshuttle
 # transparent proxy) without re-running the installer.
 mode_cmd() {
@@ -784,12 +949,7 @@ mode_cmd() {
         fi
     fi
 
-    if grep -q '^PROXY_MODE=' "$CONFIG_FILE" 2>/dev/null; then
-        sudo sed -i "s/^PROXY_MODE=.*/PROXY_MODE=${want}/" "$CONFIG_FILE"
-    else
-        printf 'PROXY_MODE=%s\n' "$want" | sudo tee -a "$CONFIG_FILE" >/dev/null
-    fi
-    PROXY_MODE="$want"
+    config_set PROXY_MODE "$want"
     echo "[tunnel-proxy] PROXY_MODE=${want} written to ${CONFIG_FILE}"
 
     if [[ "$want" == "global" ]]; then
@@ -828,6 +988,7 @@ run_command() {
         global)        mode_cmd global ;;
         local)         mode_cmd env ;;
         mode)          shift; mode_cmd "${1:-}" ;;
+        server)        shift; server_cmd "$@" ;;
         rescue)        rescue_network ;;
         *)             usage ;;
     esac

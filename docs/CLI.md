@@ -66,6 +66,8 @@ bash install.sh --server user@host [选项]
 | `tunnel-proxy local` | 切回环境变量模式（停用 sshuttle） |
 | `tunnel-proxy mode` | 查询当前模式 |
 | `tunnel-proxy mode env\|global` | 切换模式的原始命令 |
+| `tunnel-proxy server` | 查看当前中继服务器 / SSH 端口 / 隧道端口 |
+| `tunnel-proxy server <user@host> [--ssh-port N] [--tunnel-port N] [--cleanup-old]` | 切换中继服务器：更新配置、`~/.ssh/config`、重启服务；`--cleanup-old` 会顺带回滚旧中继的 GatewayPorts 与防火墙 |
 | `tunnel-proxy check` | 只校验 `tunnel.conf`，非法则退出 1 |
 | `tunnel-proxy doctor` | 端到端体检，有失败项则退出 1 |
 | `tunnel-proxy env` | 打印 `export`/`unset` 语句，供 `eval "$(tunnel-proxy env)"` |
