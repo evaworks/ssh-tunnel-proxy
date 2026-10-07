@@ -12,6 +12,9 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 CONFIG_DIR="/etc/ssh-tunnel-proxy"
 SERVICES=(tunnel-reverse tunnel-socks5 tunnel-sshuttle)
 
+SHELL_BLOCK_START="# ssh-tunnel-proxy: config"
+SHELL_BLOCK_END="# ssh-tunnel-proxy: end"
+
 confirm() {
     echo -en "${YELLOW}Uninstall ssh-tunnel-proxy? This will stop all tunnels. [y/N]${NC} "
     if [[ -t 0 ]]; then
@@ -20,6 +23,72 @@ confirm() {
         read -r resp < /dev/tty 2>/dev/null || resp="n"
     fi
     [[ "$resp" == "y" || "$resp" == "Y" ]]
+}
+
+# Remove the managed block from a shell rc file.
+# Only a range delete when BOTH markers are present, so a missing end marker
+# can never truncate the rest of the user's file.
+remove_shell_block() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+
+    if grep -q "^${SHELL_BLOCK_START}\$" "$file" 2>/dev/null && \
+       grep -q "^${SHELL_BLOCK_END}\$" "$file" 2>/dev/null; then
+        sed -i "/^${SHELL_BLOCK_START}\$/,/^${SHELL_BLOCK_END}\$/d" "$file"
+        info "Removed tunnel-proxy block from ${file}"
+    elif grep -q "^${SHELL_BLOCK_START}\$" "$file" 2>/dev/null; then
+        warn "${file}: block start marker without end marker - left untouched"
+    fi
+
+    # Legacy one-liner written by very old versions
+    sed -i '/^export ALL_PROXY=socks5h/d' "$file" 2>/dev/null || true
+}
+
+# Remove the generated `Host tunnel-proxy` entry from ~/.ssh/config.
+remove_ssh_config_entry() {
+    local ssh_config="${HOME}/.ssh/config"
+    [[ -f "$ssh_config" ]] || return 0
+
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+        /^# ssh-tunnel-proxy:/ { inblock = 1; next }
+        inblock && /^Host tunnel-proxy[[:space:]]*$/ { next }
+        inblock && /^[[:space:]]/ { next }
+        inblock && /^[[:space:]]*$/ { inblock = 0; next }
+        { print }
+    ' "$ssh_config" > "$tmp"
+    mv "$tmp" "$ssh_config"
+
+    # Also drop a bare (legacy) Host tunnel-proxy block if one is left
+    if grep -q "^Host tunnel-proxy[[:space:]]*\$" "$ssh_config" 2>/dev/null; then
+        tmp="$(mktemp)"
+        awk '
+            /^Host tunnel-proxy[[:space:]]*$/ { skip = 1; next }
+            skip && /^[[:space:]]/ { next }
+            skip && /^[[:space:]]*$/ { skip = 0; next }
+            { print }
+        ' "$ssh_config" > "$tmp"
+        mv "$tmp" "$ssh_config"
+    fi
+
+    if [[ ! -s "$ssh_config" ]]; then
+        rm -f "$ssh_config"
+        info "Removed empty SSH config file"
+    else
+        chmod 600 "$ssh_config" 2>/dev/null || true
+        info "Removed SSH config entry (Host tunnel-proxy)"
+    fi
+}
+
+# Ask the installed control script to stop the services and restore the
+# desktop proxy settings the user had before installation.
+restore_desktop_proxy() {
+    if [[ -x /usr/local/bin/tunnel-proxy ]]; then
+        info "Restoring desktop proxy settings via /usr/local/bin/tunnel-proxy stop..."
+        sudo /usr/local/bin/tunnel-proxy stop >/dev/null 2>&1 || \
+            warn "tunnel-proxy stop reported an error (continuing)"
+    fi
 }
 
 main() {
@@ -39,11 +108,14 @@ main() {
     local SSH_PORT="22"
     local TUNNEL_PORT="2222"
     if [[ -f "$CONFIG_DIR/tunnel.conf" ]]; then
+        # shellcheck disable=SC1090
         source "$CONFIG_DIR/tunnel.conf"
         info "Read config: SERVER=${SERVER}, TUNNEL_PORT=${TUNNEL_PORT}"
     fi
 
-    # Stop and disable all services
+    # ---- Restore desktop proxy, then stop and disable all services ----
+    restore_desktop_proxy
+
     echo ""
     for svc in "${SERVICES[@]}"; do
         if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
@@ -79,7 +151,7 @@ main() {
     fi
     sudo rm -f /usr/local/bin/sshuttle-cleanup
 
-    # Remove config directory
+    # Remove config directory (includes gnome-proxy.state)
     if [[ -d "$CONFIG_DIR" ]]; then
         sudo rm -rf "$CONFIG_DIR"
         info "Removed config directory: ${CONFIG_DIR}"
@@ -89,29 +161,15 @@ main() {
     sudo systemctl daemon-reload
 
     # Remove SSH config entry
-    local ssh_config="${HOME}/.ssh/config"
-    if [[ -f "$ssh_config" ]]; then
-        local tmpfile
-        tmpfile=$(mktemp)
-        sed '/^# ssh-tunnel-proxy:/,/^[[:space:]]*$/d' "$ssh_config" > "$tmpfile" 2>/dev/null || true
-        sed -i '/^Host tunnel-proxy$/,/^$/d' "$tmpfile" 2>/dev/null || true
-        mv "$tmpfile" "$ssh_config"
-        chmod 600 "$ssh_config" 2>/dev/null || true
-        info "Removed SSH config entry (Host tunnel-proxy)"
-    fi
+    remove_ssh_config_entry
 
     # Remove tunnel-proxy control script
     sudo rm -f /usr/local/bin/tunnel-proxy
     info "Removed: /usr/local/bin/tunnel-proxy"
 
-    # Remove tunnel-proxy config from bashrc
-    if [[ -f "${HOME}/.bashrc" ]]; then
-        local tmpfile
-        tmpfile=$(mktemp)
-        sed '/^# ssh-tunnel-proxy: config/,/^# ssh-tunnel-proxy: end$/d' "${HOME}/.bashrc" > "$tmpfile" 2>/dev/null || true
-        mv "$tmpfile" "${HOME}/.bashrc"
-        info "Removed tunnel-proxy config from ~/.bashrc"
-    fi
+    # Remove shell integration from ~/.bashrc and ~/.zshrc
+    remove_shell_block "${HOME}/.bashrc"
+    remove_shell_block "${HOME}/.zshrc"
 
     # ---- Clean up relay server ----
     if [[ -n "$SERVER" ]]; then
@@ -131,7 +189,7 @@ if [[ -f "$BACKUP_FILE" ]]; then
     rm -f "$BACKUP_FILE"
     echo "[REMOTE] Restored sshd_config from backup"
 else
-    sed -i '/^GatewayPorts yes/d' /etc/ssh/sshd_config
+    sed -i '/^[[:space:]]*#*[[:space:]]*GatewayPorts[[:space:]]/d' /etc/ssh/sshd_config
     echo "[REMOTE] Removed GatewayPorts from sshd_config"
 fi
 
@@ -163,6 +221,8 @@ REMOTECLEANUP
             info "Relay server cleaned up successfully"
         else
             warn "Relay server cleanup failed (check SSH connectivity or do it manually)"
+            warn "  ssh ${SERVER} 'sudo sed -i \"/GatewayPorts/d\" /etc/ssh/sshd_config && sudo systemctl restart sshd'"
+            warn "  and close TCP port ${TUNNEL_PORT} in the relay firewall"
         fi
     fi
 
@@ -175,4 +235,7 @@ REMOTECLEANUP
     echo ""
 }
 
-main
+# Allow the file to be sourced by tests without running the uninstaller.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main
+fi
